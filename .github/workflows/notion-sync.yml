@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm init -y
-          npm install @notionhq/client fs-extra path
+          npm install @notionhq/client@2.2.15 fs-extra
 
       - name: Run sync script
         env:
