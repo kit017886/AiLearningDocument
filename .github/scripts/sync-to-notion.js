@@ -31,6 +31,31 @@ async function sync() {
   }
   console.log("✅ Notion SDK verified (databases.query is available).");
 
+  // 自動偵測資料庫的標題欄位名稱
+  let titlePropertyName = null;
+  try {
+    const dbInfo = await notion.databases.retrieve({ database_id: databaseId });
+    const properties = dbInfo.properties;
+    
+    // 找出 type 為 "title" 的欄位
+    for (const [propName, propConfig] of Object.entries(properties)) {
+      if (propConfig.type === 'title') {
+        titlePropertyName = propName;
+        break;
+      }
+    }
+    
+    if (!titlePropertyName) {
+      console.error("❌ Error: No title property found in the database.");
+      process.exit(1);
+    }
+    
+    console.log(`✅ Detected title property: "${titlePropertyName}"`);
+  } catch (err) {
+    console.error("❌ Failed to retrieve database info:", err.message);
+    process.exit(1);
+  }
+
   const docsDir = path.resolve(process.cwd(), "AiLearningDocument");
   if (!(await fs.pathExists(docsDir))) {
     console.error(`❌ Error: Directory not found at ${docsDir}`);
@@ -50,7 +75,7 @@ async function sync() {
       const queryResponse = await notion.databases.query({
         database_id: databaseId,
         filter: {
-          property: "Name",
+          property: titlePropertyName,
           title: {
             equals: title,
           },
@@ -68,7 +93,7 @@ async function sync() {
         await notion.pages.update({
           page_id: pageId,
           properties: {
-            Name: {
+            [titlePropertyName]: {
               title: [{ text: { content: title } }],
             },
           },
@@ -86,7 +111,7 @@ async function sync() {
         const newPage = await notion.pages.create({
           parent: { database_id: databaseId },
           properties: {
-            Name: {
+            [titlePropertyName]: {
               title: [{ text: { content: title } }],
             },
           },
