@@ -2,18 +2,22 @@ const { Client } = require("@notionhq/client");
 const fs = require("fs-extra");
 const path = require("path");
 
-const notion = new Client({ auth: process.env.NOTION_TOKEN });
-const DATABASE_ID = process.env.NOTION_DATABASE_ID;
-
 async function sync() {
   console.log("🚀 Starting sync process...");
   
-  if (!process.env.NOTION_TOKEN || !DATABASE_ID) {
-    console.error("❌ Error: NOTION_TOKEN or NOTION_DATABASE_ID is missing in environment variables.");
+  const token = process.env.NOTION_TOKEN;
+  const databaseId = process.env.NOTION_DATABASE_ID;
+
+  if (!token || !databaseId) {
+    console.error("❌ Error: NOTION_TOKEN or NOTION_DATABASE_ID is missing.");
     process.exit(1);
   }
 
-  const docsDir = path.join(process.cwd(), "AiLearningDocument");
+  // 初始化 Notion Client
+  const notion = new Client({ auth: token });
+
+  // 修正路徑：直接使用當前目錄下的 AiLearningDocument
+  const docsDir = path.resolve(process.cwd(), "AiLearningDocument");
   
   if (!(await fs.pathExists(docsDir))) {
     console.error(`❌ Error: Directory not found at ${docsDir}`);
@@ -24,16 +28,15 @@ async function sync() {
   console.log(`📂 Found ${files.length} markdown files to sync.`);
 
   for (const file of files) {
+    const title = path.basename(file, ".md");
     try {
       const content = await fs.readFile(file, "utf-8");
-      const title = path.basename(file, ".md");
-      const relativePath = path.relative(docsDir, file);
-
+      
       console.log(`📝 Processing: ${title}...`);
 
       // 1. 檢查頁面是否已存在
       const response = await notion.databases.query({
-        database_id: DATABASE_ID,
+        database_id: databaseId,
         filter: {
           property: "Name", 
           title: { equals: title },
@@ -53,13 +56,13 @@ async function sync() {
           },
         });
 
-        await clearPageContent(pageId);
-        await appendBlocks(pageId, blocks);
+        await clearPageContent(notion, pageId);
+        await appendBlocks(notion, pageId, blocks);
         console.log(`   ✅ Updated: ${title}`);
       } else {
         console.log(`   No existing page found, creating new one...`);
         const newPage = await notion.pages.create({
-          parent: { database_id: DATABASE_ID },
+          parent: { database_id: databaseId },
           properties: {
             Name: { title: [{ text: { content: title } }] },
           },
@@ -67,13 +70,13 @@ async function sync() {
         });
 
         if (blocks.length > 100) {
-          await appendBlocks(newPage.id, blocks.slice(100));
+          await appendBlocks(notion, newPage.id, blocks.slice(100));
         }
         console.log(`   ✨ Created: ${title}`);
       }
     } catch (err) {
-      console.error(`   ❌ Failed to sync ${file}:`, err.message);
-      if (err.body) console.error(`      Detail: ${err.body}`);
+      console.error(`   ❌ Failed to sync ${title}:`, err.message);
+      if (err.body) console.log(`      API Response: ${err.body}`);
     }
   }
   console.log("🏁 Sync process finished.");
@@ -94,14 +97,18 @@ async function getMarkdownFiles(dir) {
   return results;
 }
 
-async function clearPageContent(pageId) {
+async function clearPageContent(notion, pageId) {
   const { results } = await notion.blocks.children.list({ block_id: pageId });
   for (const block of results) {
-    await notion.blocks.delete({ block_id: block.id });
+    try {
+      await notion.blocks.delete({ block_id: block.id });
+    } catch (e) {
+      // 忽略部分無法刪除的 block 錯誤
+    }
   }
 }
 
-async function appendBlocks(blockId, blocks) {
+async function appendBlocks(notion, blockId, blocks) {
   for (let i = 0; i < blocks.length; i += 100) {
     const chunk = blocks.slice(i, i + 100);
     await notion.blocks.children.append({
@@ -116,32 +123,32 @@ function parseMarkdownToBlocks(markdown) {
   const blocks = [];
 
   for (let line of lines) {
-    line = line.trim();
-    if (!line) continue;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
 
-    if (line.startsWith("# ")) {
+    if (trimmed.startsWith("# ")) {
       blocks.push({
         object: "block",
         type: "heading_1",
-        heading_1: { rich_text: [{ type: "text", text: { content: line.substring(2) } }] },
+        heading_1: { rich_text: [{ type: "text", text: { content: trimmed.substring(2) } }] },
       });
-    } else if (line.startsWith("## ")) {
+    } else if (trimmed.startsWith("## ")) {
       blocks.push({
         object: "block",
         type: "heading_2",
-        heading_2: { rich_text: [{ type: "text", text: { content: line.substring(3) } }] },
+        heading_2: { rich_text: [{ type: "text", text: { content: trimmed.substring(3) } }] },
       });
-    } else if (line.startsWith("### ")) {
+    } else if (trimmed.startsWith("### ")) {
       blocks.push({
         object: "block",
         type: "heading_3",
-        heading_3: { rich_text: [{ type: "text", text: { content: line.substring(4) } }] },
+        heading_3: { rich_text: [{ type: "text", text: { content: trimmed.substring(4) } }] },
       });
-    } else if (line.startsWith("- ")) {
+    } else if (trimmed.startsWith("- ")) {
       blocks.push({
         object: "block",
         type: "bulleted_list_item",
-        bulleted_list_item: { rich_text: [{ type: "text", text: { content: line.substring(2) } }] },
+        bulleted_list_item: { rich_text: [{ type: "text", text: { content: trimmed.substring(2) } }] },
       });
     } else {
       blocks.push({
@@ -155,4 +162,7 @@ function parseMarkdownToBlocks(markdown) {
   return blocks;
 }
 
-sync().catch(console.error);
+sync().catch(err => {
+  console.error("🔥 Fatal Error:", err);
+  process.exit(1);
+});
