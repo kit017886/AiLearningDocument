@@ -6,65 +6,77 @@ const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const DATABASE_ID = process.env.NOTION_DATABASE_ID;
 
 async function sync() {
+  console.log("🚀 Starting sync process...");
+  
+  if (!process.env.NOTION_TOKEN || !DATABASE_ID) {
+    console.error("❌ Error: NOTION_TOKEN or NOTION_DATABASE_ID is missing in environment variables.");
+    process.exit(1);
+  }
+
   const docsDir = path.join(process.cwd(), "AiLearningDocument");
+  
+  if (!(await fs.pathExists(docsDir))) {
+    console.error(`❌ Error: Directory not found at ${docsDir}`);
+    return;
+  }
+
   const files = await getMarkdownFiles(docsDir);
+  console.log(`📂 Found ${files.length} markdown files to sync.`);
 
   for (const file of files) {
-    const content = await fs.readFile(file, "utf-8");
-    const title = path.basename(file, ".md");
-    const relativePath = path.relative(docsDir, file);
+    try {
+      const content = await fs.readFile(file, "utf-8");
+      const title = path.basename(file, ".md");
+      const relativePath = path.relative(docsDir, file);
 
-    console.log(`Syncing: ${title} (${relativePath})...`);
+      console.log(`📝 Processing: ${title}...`);
 
-    // 1. 檢查頁面是否已存在於資料庫
-    const response = await notion.databases.query({
-      database_id: DATABASE_ID,
-      filter: {
-        property: "Name", // 假設資料庫標題欄位名稱為 "Name"
-        title: {
-          equals: title,
-        },
-      },
-    });
-
-    const blocks = parseMarkdownToBlocks(content);
-
-    if (response.results.length > 0) {
-      // 2. 更新現有頁面
-      const pageId = response.results[0].id;
-      
-      // 更新屬性 (選擇性)
-      await notion.pages.update({
-        page_id: pageId,
-        properties: {
-          Name: {
-            title: [{ text: { content: title } }],
-          },
+      // 1. 檢查頁面是否已存在
+      const response = await notion.databases.query({
+        database_id: DATABASE_ID,
+        filter: {
+          property: "Name", 
+          title: { equals: title },
         },
       });
 
-      // 清除舊內容並寫入新內容
-      await clearPageContent(pageId);
-      await appendBlocks(pageId, blocks);
-      console.log(`✅ Updated: ${title}`);
-    } else {
-      // 3. 建立新頁面
-      const newPage = await notion.pages.create({
-        parent: { database_id: DATABASE_ID },
-        properties: {
-          Name: {
-            title: [{ text: { content: title } }],
-          },
-        },
-        children: blocks.slice(0, 100), // Notion API 限制一次最多 100 個 blocks
-      });
+      const blocks = parseMarkdownToBlocks(content);
 
-      if (blocks.length > 100) {
-        await appendBlocks(newPage.id, blocks.slice(100));
+      if (response.results.length > 0) {
+        const pageId = response.results[0].id;
+        console.log(`   Found existing page (ID: ${pageId}), updating...`);
+        
+        await notion.pages.update({
+          page_id: pageId,
+          properties: {
+            Name: { title: [{ text: { content: title } }] },
+          },
+        });
+
+        await clearPageContent(pageId);
+        await appendBlocks(pageId, blocks);
+        console.log(`   ✅ Updated: ${title}`);
+      } else {
+        console.log(`   No existing page found, creating new one...`);
+        const newPage = await notion.pages.create({
+          parent: { database_id: DATABASE_ID },
+          properties: {
+            Name: { title: [{ text: { content: title } }] },
+          },
+          children: blocks.slice(0, 100),
+        });
+
+        if (blocks.length > 100) {
+          await appendBlocks(newPage.id, blocks.slice(100));
+        }
+        console.log(`   ✨ Created: ${title}`);
       }
-      console.log(`✨ Created: ${title}`);
+    } catch (err) {
+      console.error(`   ❌ Failed to sync ${file}:`, err.message);
+      if (err.body) console.error(`      Detail: ${err.body}`);
     }
   }
+  console.log("🏁 Sync process finished.");
 }
 
 async function getMarkdownFiles(dir) {
@@ -90,7 +102,6 @@ async function clearPageContent(pageId) {
 }
 
 async function appendBlocks(blockId, blocks) {
-  // Notion API 每次最多只能 append 100 個 blocks
   for (let i = 0; i < blocks.length; i += 100) {
     const chunk = blocks.slice(i, i + 100);
     await notion.blocks.children.append({
@@ -145,4 +156,3 @@ function parseMarkdownToBlocks(markdown) {
 }
 
 sync().catch(console.error);
-
